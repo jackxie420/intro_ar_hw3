@@ -64,99 +64,69 @@
         var sceneToRender = null;
         var createDefaultEngine = function() { return new BABYLON.Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true,  disableWebGL2Support: false}); };
         var createScene = async function () {
-
-    
-    // This creates a basic Babylon Scene object (non-mesh)
     var scene = new BABYLON.Scene(engine);
-
-    // This creates and positions a free camera (non-mesh)
-    var camera = new BABYLON.FreeCamera("camera1", new BABYLON.Vector3(0, 5, -10), scene);
-
-    // This targets the camera to scene origin
+    var camera = new BABYLON.FreeCamera("camera1", new BABYLON.Vector3(0, 1, -5), scene);
     camera.setTarget(BABYLON.Vector3.Zero());
-
-    // This attaches the camera to the canvas
     camera.attachControl(canvas, true);
 
-    // This creates a light, aiming 0,1,0 - to the sky (non-mesh)
     var light = new BABYLON.HemisphericLight("light", new BABYLON.Vector3(0, 1, 0), scene);
-
-    // Default intensity is 1. Let's dim the light a small amount
     light.intensity = 0.7;
 
-    const xr = await scene.createDefaultXRExperienceAsync({
-    // ask for an ar-session
-    uiOptions: {
-      sessionMode: "immersive-ar",
-    },
-    });
-
-
-    const fm = xr.baseExperience.featuresManager;
-
-    const xrTest = fm.enableFeature(BABYLON.WebXRHitTest, "latest");
-
-    const marker = BABYLON.MeshBuilder.CreateTorus('marker', { diameter: 0.15, thickness: 0.07 });
+    const marker = BABYLON.MeshBuilder.CreateTorus("marker", { diameter: 0.15, thickness: 0.07 }, scene);
     marker.isVisible = false;
     marker.rotationQuaternion = new BABYLON.Quaternion();
+    const markerMat = new BABYLON.StandardMaterial("markerMat", scene);
+    markerMat.emissiveColor = new BABYLON.Color3(1, 0.2, 0.2);
+    markerMat.disableLighting = true;
+    marker.material = markerMat;
 
-    // Track if car has been spawned
-    let carSpawned = false;
-    let spawnedCar = null;
+    let xr = null;
+    try {
+        xr = await scene.createDefaultXRExperienceAsync({
+            uiOptions: { sessionMode: "immersive-ar" },
+            optionalFeatures: ["local", "hit-test"]
+        });
+    } catch (e) {
+        console.warn('XR initialization failed:', e);
+        return scene;
+    }
 
-    // Simple marker following controller
-    xr.baseExperience.onStateChangedObservable.add((state) => {
-        if (state === BABYLON.WebXRState.IN_XR) {
-            scene.onBeforeRenderObservable.add(() => {
-                if (xr.input && xr.input.controllers) {
-                    const rightController = xr.input.controllers.find(c => c.inputSource.handedness === "right");
-                    if (rightController && rightController.grip) {
-                        // Position marker in front of controller
-                        const controllerPos = rightController.grip.position;
-                        const controllerDir = rightController.grip.forward;
-                        marker.position = controllerPos.add(controllerDir.scale(1.5));
-                        marker.isVisible = true;
-                    }
-                }
-            });
+    const session = xr.baseExperience?.sessionManager?.session;
+    if (!session) return scene;
+
+    const viewerSpace = await session.requestReferenceSpace('viewer');
+    const localRefSpace = await session.requestReferenceSpace('local');
+
+    let hitTestSource = null;
+    try {
+        const opts = { space: viewerSpace };
+        if (typeof XRRay !== 'undefined') {
+            opts.offsetRay = new XRRay({ y: 0.5 });
         }
-    });
+        hitTestSource = await session.requestHitTestSource(opts);
+    } catch (e) {
+        console.warn('requestHitTestSource failed:', e);
+    }
 
-    // Spawn or move car at marker position
-    scene.onPointerDown = (evt) => {
-        if (xr.baseExperience.state === BABYLON.WebXRState.IN_XR) {
-            if (!carSpawned) {
-                // First time: spawn new car
-                spawnedCar = carRoot.clone("spawnedCar");
-                spawnedCar.position = marker.position;
-                spawnedCar.scaling = new BABYLON.Vector3(0.5, 0.5, 0.5);
-                
-                // Make all meshes of the spawned car visible
-                spawnedCar.getChildMeshes().forEach(mesh => {
-                    mesh.isVisible = true;
-                });
-                spawnedCar.isVisible = true;
-                
-                carSpawned = true;
-            } else {
-                // Car already exists: move it to new position
-                spawnedCar.position = marker.position;
+    function onXRFrame(time, xrFrame) {
+        const results = hitTestSource ? xrFrame.getHitTestResults(hitTestSource) : [];
+        if (results && results.length > 0) {
+            const pose = results[0].getPose(localRefSpace);
+            if (pose && pose.transform && pose.transform.matrix) {
+                const m = BABYLON.Matrix.FromArray(pose.transform.matrix);
+                m.decompose(marker.scaling, marker.rotationQuaternion, marker.position);
+                marker.isVisible = true;
             }
+        } else {
+            // keep visible so user sees something
+            const fwd = camera.getDirection(BABYLON.Vector3.Forward());
+            marker.position = camera.position.add(fwd.scale(1.5));
+            marker.isVisible = true;
         }
-    };
+        session.requestAnimationFrame(onXRFrame);
+    }
 
-
-    // Load the car model
-    var car = await BABYLON.SceneLoader.ImportMeshAsync("", "./", "generic_sedan_car.glb", scene);
-    
-    var carRoot = car.meshes[0];
-    
-    // Hide all car meshes so they don't appear at the beginning
-    car.meshes.forEach(mesh => {
-        mesh.isVisible = false;
-    });
-
-    
+    session.requestAnimationFrame(onXRFrame);
 
     return scene;
 };
