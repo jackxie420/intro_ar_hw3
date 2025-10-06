@@ -100,47 +100,33 @@
     marker.isVisible = false;
     marker.rotationQuaternion = new BABYLON.Quaternion();
 
-    xrTest.onHitTestResultObservable.add((results) => {
-        if (results.length) {
-            marker.isVisible = true;
-            hitTest = results[0];
-            hitTest.transformationMatrix.decompose(marker.scaling, marker.rotationQuaternion, marker.position);
-        } else {
-            marker.isVisible = false;
+    // Simple marker following controller
+    xr.baseExperience.onStateChangedObservable.add((state) => {
+        if (state === BABYLON.WebXRState.IN_XR) {
+            scene.onBeforeRenderObservable.add(() => {
+                if (xr.input && xr.input.controllers) {
+                    const rightController = xr.input.controllers.find(c => c.inputSource.handedness === "right");
+                    if (rightController && rightController.grip) {
+                        // Position marker in front of controller
+                        const controllerPos = rightController.grip.position;
+                        const controllerDir = rightController.grip.forward;
+                        marker.position = controllerPos.add(controllerDir.scale(1.5));
+                        marker.isVisible = true;
+                    }
+                }
+            });
         }
     });
 
-    // Fallback for plugin testing - add click to spawn
+    // Spawn car at marker position
     scene.onPointerDown = (evt) => {
         if (xr.baseExperience.state === BABYLON.WebXRState.IN_XR) {
-            // If hit test is available, use it
-            if (hitTest) {
-                spawnCarAtHitTest(hitTest);
-            } else {
-                // Fallback: spawn at camera position + forward
-                const camera = scene.activeCamera;
-                const forward = camera.getDirection(BABYLON.Vector3.Forward());
-                const spawnPosition = camera.position.add(forward.scale(2));
-                spawnCarAtPosition(spawnPosition);
-            }
+            const newCar = carRoot.clone("spawnedCar");
+            newCar.position = marker.position;
+            newCar.scaling = new BABYLON.Vector3(0.5, 0.5, 0.5);
+            newCar.isVisible = true;
         }
     };
-
-    // Spawn car at hit test location
-    function spawnCarAtHitTest(hitTest) {
-        const newCar = carRoot.clone("spawnedCar");
-        hitTest.transformationMatrix.decompose(undefined, newCar.rotationQuaternion, newCar.position);
-        newCar.scaling = new BABYLON.Vector3(0.5, 0.5, 0.5);
-        newCar.isVisible = true;
-    }
-
-    // Spawn car at specific position (fallback)
-    function spawnCarAtPosition(position) {
-        const newCar = carRoot.clone("spawnedCar");
-        newCar.position = position;
-        newCar.scaling = new BABYLON.Vector3(0.5, 0.5, 0.5);
-        newCar.isVisible = true;
-    }
 
 
     // Load the car model
