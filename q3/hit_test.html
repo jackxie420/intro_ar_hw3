@@ -64,72 +64,158 @@
         var sceneToRender = null;
         var createDefaultEngine = function() { return new BABYLON.Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true,  disableWebGL2Support: false}); };
         var createScene = async function () {
-    var scene = new BABYLON.Scene(engine);
-    var camera = new BABYLON.FreeCamera("camera1", new BABYLON.Vector3(0, 1, -5), scene);
+
+            var scene = new BABYLON.Scene(engine);
+    var camera = new BABYLON.FreeCamera("camera1", new BABYLON.Vector3(0, 5, -10), scene);
     camera.setTarget(BABYLON.Vector3.Zero());
     camera.attachControl(canvas, true);
-
     var light = new BABYLON.HemisphericLight("light", new BABYLON.Vector3(0, 1, 0), scene);
     light.intensity = 0.7;
 
-    const marker = BABYLON.MeshBuilder.CreateTorus("marker", { diameter: 0.15, thickness: 0.07 }, scene);
-    marker.isVisible = false;
-    marker.rotationQuaternion = new BABYLON.Quaternion();
-    const markerMat = new BABYLON.StandardMaterial("markerMat", scene);
-    markerMat.emissiveColor = new BABYLON.Color3(1, 0.2, 0.2);
-    markerMat.disableLighting = true;
-    marker.material = markerMat;
+    var car = await BABYLON.SceneLoader.ImportMeshAsync("", "https://raw.githubusercontent.com/ramjigeddam/3d/master/", "Car.glb", scene);
+    
+    var carRoot = car.meshes[0];
+    
+    car.meshes.forEach(mesh => {
+        mesh.isVisible = false;
+    });
 
-    let xr = null;
-    try {
-        xr = await scene.createDefaultXRExperienceAsync({
-            uiOptions: { sessionMode: "immersive-ar" },
-            optionalFeatures: ["local", "hit-test"]
-        });
-    } catch (e) {
-        console.warn('XR initialization failed:', e);
-        return scene;
-    }
 
-    const session = xr.baseExperience?.sessionManager?.session;
-    if (!session) return scene;
+    // Simple ground plane for visual reference and picking
+    var ground = BABYLON.MeshBuilder.CreateGround("ground", { width: 20, height: 20 }, scene);
+    ground.position.y = 0;
+    var groundMat = new BABYLON.StandardMaterial("groundMat", scene);
+    groundMat.diffuseColor = new BABYLON.Color3(0.2, 0.4, 0.2);
+    ground.material = groundMat;
+    ground.receiveShadows = true;
+    const xr = await scene.createDefaultXRExperienceAsync({
+    uiOptions: {
+      sessionMode: "immersive-ar",
+    },
+    });
 
-    const viewerSpace = await session.requestReferenceSpace('viewer');
-    const localRefSpace = await session.requestReferenceSpace('local');
 
+    const fm = xr.baseExperience.featuresManager;
+
+    const anchors = fm.enableFeature(BABYLON.WebXRAnchorSystem.Name, 'latest');
+    fm.enableFeature(BABYLON.WebXRBackgroundRemover.Name);
+
+    let model_mesh = null;
     let hitTestSource = null;
-    try {
-        const opts = { space: viewerSpace };
-        if (typeof XRRay !== 'undefined') {
-            opts.offsetRay = new XRRay({ y: 0.5 });
-        }
-        hitTestSource = await session.requestHitTestSource(opts);
-    } catch (e) {
-        console.warn('requestHitTestSource failed:', e);
-    }
+    let currentHitTestResult = null;
+    let lastPlacedNode = null;
 
-    function onXRFrame(time, xrFrame) {
-        const results = hitTestSource ? xrFrame.getHitTestResults(hitTestSource) : [];
-        if (results && results.length > 0) {
-            const pose = results[0].getPose(localRefSpace);
-            if (pose && pose.transform && pose.transform.matrix) {
-                const m = BABYLON.Matrix.FromArray(pose.transform.matrix);
-                m.decompose(marker.scaling, marker.rotationQuaternion, marker.position);
-                marker.isVisible = true;
+    const cursor = BABYLON.MeshBuilder.CreateTorus('cursor', { thickness: 0.15, diameter: 0.5 });
+    cursor.rotationQuaternion = new BABYLON.Quaternion();
+    cursor.isVisible = false;
+    (function(){
+        const m = new BABYLON.StandardMaterial("cursorMat", scene);
+        m.emissiveColor = new BABYLON.Color3(1, 0.2, 0.2);
+        m.disableLighting = true;
+        cursor.material = m;
+    })();
+
+    xr.input.onControllerAddedObservable.add(async (controller) => {
+        controller.onMotionControllerInitObservable.add((motionController) => {
+            if (motionController.handedness === 'right') {
+                const session = xr.baseExperience.sessionManager.session;
+                const refSpace = xr.baseExperience.sessionManager.referenceSpace;
+                session.requestHitTestSource({ space: controller.inputSource.targetRaySpace }).then((source) => {
+                    hitTestSource = source;
+                });
+                xr.baseExperience.sessionManager.onXRFrameObservable.add((xrFrame) => {
+                    if (!hitTestSource) return;
+                    const results = xrFrame.getHitTestResults(hitTestSource);
+                    if (results.length) {
+                        cursor.isVisible = true;
+                        currentHitTestResult = results[0];
+                        const pose = results[0].getPose(refSpace);
+                        const p = pose.transform.position;
+                        const q = pose.transform.orientation;
+                        cursor.position.set(p.x, p.y, -p.z);
+                        cursor.rotationQuaternion.set(q.x, q.y, q.z, q.w);
+                        if (model_mesh) {
+                            model_mesh.position.set(p.x, p.y, -p.z);
+                            model_mesh.rotationQuaternion.set(q.x, q.y, q.z, q.w);
+                        }
+                    } else {
+                        cursor.isVisible = false;
+                        currentHitTestResult = null;
+                    }
+                });
+                const stick = motionController.getComponent("xr-standard-thumbstick") || motionController.getComponent("thumbstick");
+                if (stick) {
+                    let ax = 0, ay = 0;
+                    const speed = 1.0;
+                    stick.onAxisValueChangedObservable.add((axes) => { ax = axes.x; ay = -axes.y; });
+                    scene.onBeforeRenderObservable.add(() => {
+                        if (!lastPlacedNode) return;
+                        const dt = scene.getEngine().getDeltaTime() / 1000;
+                        const cam = scene.activeCamera;
+                        const forward = cam.getDirection(BABYLON.Axis.Z); forward.y = 0; forward.normalize();
+                        const right = BABYLON.Vector3.Cross(BABYLON.Axis.Y, forward).normalize();
+                        const DEADZONE = 0.1;
+                        const mx = Math.abs(ax) < DEADZONE ? 0 : ax;
+                        const my = Math.abs(ay) < DEADZONE ? 0 : ay;
+                        const move = right.scale(mx).add(forward.scale(my)).scale(speed * dt);
+                        lastPlacedNode.position.addInPlaceFromFloats(move.x, 0, move.z);
+                    });
+                }
+
+                const trigger = motionController.getComponent("xr-standard-trigger");
+                if (trigger && trigger.onButtonStateChangedObservable) {
+                    trigger.onButtonStateChangedObservable.add(() => {
+                        if (trigger.pressed && cursor.isVisible) {
+                            const placed = carRoot.clone("car_" + Date.now());
+                            placed.setEnabled(true);
+                            placed.position.copyFrom(cursor.position);
+                            placed.rotationQuaternion = cursor.rotationQuaternion.clone();
+                            placed.scaling.set(0.05, 0.05, 0.05);
+                        }
+                    });
+                }
             }
-        } else {
-            // keep visible so user sees something
-            const fwd = camera.getDirection(BABYLON.Vector3.Forward());
-            marker.position = camera.position.add(fwd.scale(1.5));
-            marker.isVisible = true;
-        }
-        session.requestAnimationFrame(onXRFrame);
+        });
+    });
+
+    if (anchors) {
+        anchors.onAnchorAddedObservable.add(anchor => {
+            if (!model_mesh) return;
+            model_mesh.isVisible = true;
+            const root = new BABYLON.TransformNode("placedRoot", scene);
+            anchor.attachedNode = root;
+            const clone = model_mesh.clone("car_clone");
+            clone.scaling = model_mesh.scaling.clone();
+            clone.parent = root;
+            clone.position.set(0, 0, 0);
+            clone.rotationQuaternion = new BABYLON.Quaternion();
+            lastPlacedNode = clone;
+            model_mesh.isVisible = false;
+        });
+        anchors.onAnchorRemovedObservable.add(anchor => { if (anchor && anchor.attachedNode) { anchor.attachedNode.dispose(); } });
     }
 
-    session.requestAnimationFrame(onXRFrame);
+    scene.onPointerDown = () => {
+        if (currentHitTestResult && anchors && xr.baseExperience.state === BABYLON.WebXRState.IN_XR) {
+            const session = xr.baseExperience.sessionManager.session;
+            const refSpace = xr.baseExperience.sessionManager.referenceSpace;
+            const pose = currentHitTestResult.getPose(refSpace);
+            if (pose) {
+                anchors.addAnchorAtPositionAndRotationAsync(
+                    new BABYLON.Vector3(pose.transform.position.x, pose.transform.position.y, -pose.transform.position.z),
+                    new BABYLON.Quaternion(pose.transform.orientation.x, pose.transform.orientation.y, pose.transform.orientation.z, pose.transform.orientation.w)
+                );
+            }
+        }
+    };
+
+
+
+    
 
     return scene;
 };
+
                 window.initFunction = async function() {
                     
                     
