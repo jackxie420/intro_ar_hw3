@@ -100,6 +100,10 @@
     marker.isVisible = false;
     marker.rotationQuaternion = new BABYLON.Quaternion();
 
+    // Track if car has been spawned
+    let carSpawned = false;
+    let spawnedCar = null;
+
     // Simple marker following controller
     xr.baseExperience.onStateChangedObservable.add((state) => {
         if (state === BABYLON.WebXRState.IN_XR) {
@@ -118,13 +122,26 @@
         }
     });
 
-    // Spawn car at marker position
+    // Spawn or move car at marker position
     scene.onPointerDown = (evt) => {
         if (xr.baseExperience.state === BABYLON.WebXRState.IN_XR) {
-            const newCar = carRoot.clone("spawnedCar");
-            newCar.position = marker.position;
-            newCar.scaling = new BABYLON.Vector3(0.5, 0.5, 0.5);
-            newCar.isVisible = true;
+            if (!carSpawned) {
+                // First time: spawn new car
+                spawnedCar = carRoot.clone("spawnedCar");
+                spawnedCar.position = marker.position;
+                spawnedCar.scaling = new BABYLON.Vector3(0.5, 0.5, 0.5);
+                
+                // Make all meshes of the spawned car visible
+                spawnedCar.getChildMeshes().forEach(mesh => {
+                    mesh.isVisible = true;
+                });
+                spawnedCar.isVisible = true;
+                
+                carSpawned = true;
+            } else {
+                // Car already exists: move it to new position
+                spawnedCar.position = marker.position;
+            }
         }
     };
 
@@ -133,9 +150,13 @@
     var car = await BABYLON.SceneLoader.ImportMeshAsync("", "./", "generic_sedan_car.glb", scene);
     
     var carRoot = car.meshes[0];
+    
+    // Hide all car meshes so they don't appear at the beginning
+    car.meshes.forEach(mesh => {
+        mesh.isVisible = false;
+    });
 
-    // Move the whole car
-    carRoot.position = new BABYLON.Vector3(0, 0, 5);
+    
 
     return scene;
 };
